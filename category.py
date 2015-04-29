@@ -37,7 +37,8 @@ class Category(webapp2.RequestHandler):
     items = self.request.get_all('item[]')
     ipk = ndb.Key(db_models.Item, self.app.config.get('default-group'))
     curr_item_keys_id = [it.id() for it in db_models.Item.query(ancestor=ipk).fetch(keys_only=True)]
-    my_it_list = []
+    my_it_dic = {}
+    old_cat_dic= {}
     if items:
       if not curr_item_keys_id:
         self.response.set_status(404, "NO ITEMS EXIST to be added")
@@ -53,17 +54,34 @@ class Category(webapp2.RequestHandler):
           self.response.set_status(404, "Item: " + add_it + " not FOUND")
           self.response.write(self.response.status)
           return
-        my_it_list.append(my_it)
+        if my_it.category:
+          if add_it in old_cat_dic:
+            old_cat_dic[str(add_it)].append(my_it.category)
+          else:
+            old_cat_dic[add_it] = [my_it.category]
+        my_it_dic[str(add_it)] = my_it
 
         
     new_cat.items = [ ndb.Key(db_models.Item, it) for it in items ]
     
     new_cat_key = new_cat.put()
 
-    for ch_it in my_it_list:
-      ch_it.category = new_cat_key
-    if my_it_list:
+    # this part changes all the items to this category
+    if my_it_dic:
+      my_it_list = my_it_dic.values()
+      for ch_it in my_it_list:
+        ch_it.category = new_cat_key
       ndb.put_multi(my_it_list)
+      
+    # this part now removes all the old items from their previous categories
+    if old_cat_dic:
+
+      for k,v in old_cat_dic.items():
+        old_catkey_ent = ndb.get_multi(v)
+        for old_cat in old_catkey_ent:
+          old_cat.items.remove(my_it_dic[k].key)
+        ndb.put_multi(old_catkey_ent)
+      
       
     out = new_cat.to_dict()
     self.response.write(json.dumps(out))
