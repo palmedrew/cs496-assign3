@@ -11,7 +11,7 @@ class Category(webapp2.RequestHandler):
     
     POST Body Variables:
     name - Required. 
-    item[] - list of item entity keys
+    items[] - list of item entity keys
     
     """
     
@@ -34,54 +34,40 @@ class Category(webapp2.RequestHandler):
     new_cat = db_models.Category(parent=pk)
     new_cat.name = name
     
-    items = self.request.get_all('item[]')
+    items = self.request.get_all('items[]')
     ipk = ndb.Key(db_models.Item, self.app.config.get('default-group'))
     curr_item_keys_id = [it.id() for it in db_models.Item.query(ancestor=ipk).fetch(keys_only=True)]
-    my_it_dic = {}
-    old_cat_dic= {}
+    my_it_list = []
     if items:
       if not curr_item_keys_id:
         self.response.set_status(404, "NO ITEMS EXIST to be added")
         self.response.write(self.response.status)
         return
-      for add_it in items:
+      for add_it in items:  #first run through to see if all items good
         if add_it not in curr_item_keys_id:
           self.response.set_status(404, "Item: " + add_it + " not in current list of items")
           self.response.write(self.response.status)
           return
+      # now second loop to do changes
+      for add_it in items:   # DANGER: assumes all keys give an item
         my_it = db_models.Item.get_by_id(str(add_it), parent=ipk)
-        if not my_it:
-          self.response.set_status(404, "Item: " + add_it + " not FOUND")
-          self.response.write(self.response.status)
-          return
-        if my_it.category:
-          if add_it in old_cat_dic:
-            old_cat_dic[str(add_it)].append(my_it.category)
-          else:
-            old_cat_dic[add_it] = [my_it.category]
-        my_it_dic[str(add_it)] = my_it
+        if my_it.category:   # DANGER: also assumes item.category gives a category
+          # remove item from old category
+          old_cat = db_models.Category.get_by_id(my_it.category.integer_id(), parent=pk)
+          old_cat.items.remove(my_it.key)
+          old_cat.put()
+        my_it_list.append(my_it)
 
         
-    new_cat.items = [ ndb.Key(db_models.Item, it) for it in items ]
+    new_cat.items = [ ndb.Key(db_models.Item, it, parent=ipk) for it in items ]
     
     new_cat_key = new_cat.put()
 
     # this part changes all the items to this category
-    if my_it_dic:
-      my_it_list = my_it_dic.values()
+    if my_it_list:
       for ch_it in my_it_list:
         ch_it.category = new_cat_key
       ndb.put_multi(my_it_list)
-      
-    # this part now removes all the old items from their previous categories
-    if old_cat_dic:
-
-      for k,v in old_cat_dic.items():
-        old_catkey_ent = ndb.get_multi(v)
-        for old_cat in old_catkey_ent:
-          old_cat.items.remove(my_it_dic[k].key)
-        ndb.put_multi(old_catkey_ent)
-      
       
     out = new_cat.to_dict()
     self.response.write(json.dumps(out))
@@ -156,7 +142,7 @@ class Category(webapp2.RequestHandler):
         self.response.set_status(409, "Category Name: " + name + " already used")
         self.response.write(self.response.status)
         return
-    cat.name = name
+      cat.name = name
       
     if add_item or del_item:
       # get rid of any duplicates in add_item and del_item
@@ -169,26 +155,32 @@ class Category(webapp2.RequestHandler):
       ipk = ndb.Key(db_models.Item, self.app.config.get('default-group'))
       q = db_models.Item.query(ancestor=ipk)
       all_item_key_id = [x.id() for x in q.fetch(keys_only=True)] 
+      
+      # loops to see if item keys present in db
       if add_item:
         for si_key_id in add_item:
           if si_key_id not in all_item_key_id:
             self.response.set_status(404, "AddItem: Key.id: " + si_key_id + " not found")
             self.response.write(self.response.status)
             return
-          elif ndb.Key(db_models.Item, si_key_id) not in cat.items:
-            cat.items.append(ndb.Key(db_models.Item, si_key_id))
-            my_it = db_models.Item.get_by_id(str(si_key_id), parent=ipk)
-            my_it.category = cat.key
-            my_it.put()
-          
       if del_item:
         for si_key_id in del_item:
           if si_key_id not in all_item_key_id:
             self.response.set_status(404, "DelItem: Key.id: " + si_key_id + " not found")
             self.response.write(self.response.status)
             return
-          elif ndb.Key(db_models.Item, si_key_id) in cat.items:
-            cat.items.remove(ndb.Key(db_models.Item, si_key_id))
+      # new redo loops to do work, assume safe?
+      if add_item:
+        for si_key_id in add_item:
+          if ndb.Key(db_models.Item, si_key_id, parent=ipk) not in cat.items:
+            cat.items.append(ndb.Key(db_models.Item, si_key_id, parent=ipk))
+            my_it = db_models.Item.get_by_id(str(si_key_id), parent=ipk)
+            my_it.category = cat.key
+            my_it.put()
+      if del_item:
+        for si_key_id in del_item:
+          if ndb.Key(db_models.Item, si_key_id, parent=ipk) in cat.items:
+            cat.items.remove(ndb.Key(db_models.Item, si_key_id, parent=ipk))
             my_it = db_models.Item.get_by_id(str(si_key_id), parent=ipk)
             my_it.category = None
             my_it.put()
@@ -226,12 +218,23 @@ class Category(webapp2.RequestHandler):
       return
       
     # prior to delete the category, set all Item in this category to have category=None
-    if cat.items:
+    ipk = ndb.Key(db_models.Item, self.app.config.get('default-group'))
+    '''
+    if cat.items:  # DANGER: assumes all keys valid  DAMN need parent thing for key
       item_list = ndb.get_multi(cat.items)
       for it in item_list:
-        it.category = None
+        if it:
+          it.category = None
       ndb.put_multi(item_list)
-    
+    '''
+    #'''
+    for ikey in cat.items:
+      it = db_models.Item.get_by_id(ikey.string_id(), parent=ipk)
+      if it:
+        it.category = None
+        it.put()
+    #'''
+      
     # delete the category
     cat.key.delete()
     

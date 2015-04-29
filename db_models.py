@@ -33,4 +33,5 @@ class Place(Model):
   def to_dict(self):
     d = super(Place, self).to_dict()
     d['items'] = [rep.id() for rep in d['items']]
+    d['geocode'] = d['geocode'].__repr__()
     return d
